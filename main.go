@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/ioutil"
 	"math"
+	"math/rand"
 	"net/http"
 	"os"
 	"strconv"
@@ -42,6 +43,7 @@ type Main struct {
 	timePerSeries int64 // How much the client is backing off due to unacceptible response times.
 	currentDelay  time.Duration
 	wmaLatency    float64
+	inchTagValue  string
 
 	// Decay factor used when weighting average latency returned by server.
 	alpha float64
@@ -58,6 +60,7 @@ type Main struct {
 	Concurrency      int
 	Measurements     int   // Number of measurements
 	Tags             []int // tag cardinalities
+	Additive         string
 	PointsPerSeries  int
 	FieldsPerPoint   int
 	BatchSize        int
@@ -70,12 +73,17 @@ type Main struct {
 
 // NewMain returns a new instance of Main.
 func NewMain() *Main {
-	return &Main{
+	m := &Main{
 		Stdin:  os.Stdin,
 		Stdout: os.Stdout,
 		Stderr: os.Stderr,
 		alpha:  0.5, // Weight the mean latency by 50% history / 50% latest value.
 	}
+
+	// Set random inch tag.
+	rand.Seed(time.Now().UnixNano())
+	m.inchTagValue = fmt.Sprint(rand.Intn(1000000))
+	return m
 }
 
 // ParseFlags parses the command line flags.
@@ -89,6 +97,7 @@ func (m *Main) ParseFlags(args []string) error {
 	fs.IntVar(&m.Concurrency, "c", 1, "Concurrency")
 	fs.IntVar(&m.Measurements, "m", 1, "Measurements")
 	tags := fs.String("t", "10,10,10", "Tag cardinality")
+	fs.StringVar(&m.Additive, "a", "", "Set a tag value")
 	fs.IntVar(&m.PointsPerSeries, "p", 100, "Points per series")
 	fs.IntVar(&m.FieldsPerPoint, "f", 1, "Fields per point")
 	fs.IntVar(&m.BatchSize, "b", 5000, "Batch size")
@@ -135,6 +144,9 @@ func (m *Main) Run() error {
 	fmt.Fprintf(m.Stdout, "Concurrency: %d\n", m.Concurrency)
 	fmt.Fprintf(m.Stdout, "Measurements: %d\n", m.Measurements)
 	fmt.Fprintf(m.Stdout, "Tag cardinalities: %+v\n", m.Tags)
+	if m.Additive != "" {
+		fmt.Fprintf(m.Stdout, "Using additive series.\n")
+	}
 	fmt.Fprintf(m.Stdout, "Points per series: %d\n", m.PointsPerSeries)
 	fmt.Fprintf(m.Stdout, "Total series: %d\n", m.SeriesN())
 	fmt.Fprintf(m.Stdout, "Total points: %d\n", m.PointN())
@@ -266,9 +278,20 @@ func (m *Main) generateBatches() <-chan []byte {
 			fields = append(fields, []byte(fmt.Sprintf("v%d=1%s", i, delim))...)
 		}
 
+		var additiveTag string
+		if m.Additive != "" {
+			additiveTag = fmt.Sprintf(",inch=%s", m.Additive)
+		}
+
 		for i := 0; i < m.PointN(); i++ {
 			// Write point.
-			buf.Write([]byte(fmt.Sprintf("m%d", i%m.Measurements)))
+			buf.WriteString((fmt.Sprintf("m%d", i%m.Measurements))) // measurement
+
+			if m.Additive != "" {
+				// Inch tag value
+				buf.WriteString(additiveTag)
+			}
+
 			for j, value := range values {
 				fmt.Fprintf(&buf, ",tag%d=value%d", j, value)
 			}
